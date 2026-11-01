@@ -15,7 +15,18 @@ def calculate_metrics(
     config: Dict[str, Any],
     events: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Return a JSON dictionary for the chosen performance metric.
+    """Return a JSON-serializable dictionary for the chosen performance metric.
+
+    Chosen metric (on_time_rate): of the parcels that were delivered, the
+    fraction delivered within their preferred window. A delivery exactly on a
+    window boundary counts as on time; early and late deliveries both count as
+    misses.
+
+    On its own this ignores undelivered parcels, so a policy could raise it by
+    delivering fewer, easier parcels. delivered_rate and
+    on_time_rate_all_parcels (on-time deliveries out of every parcel that
+    arrived) are reported alongside it so that can be checked; a policy is
+    only better if it raises on_time_rate without lowering delivered_rate.
 
     parcels and distances are the rows of the day's CSV files, config is the
     contents of config.json, and events are the records from the run's log.
@@ -24,33 +35,48 @@ def calculate_metrics(
     midnight: "17:00" is 17 * 60 = 1020.
     """
 
-    # Count deliveries inside the preferred window, including its endpoints.
-    # Every parcel in the selected day is part of the denominator.
     windows = {
-        parcel["parcel_id"]: (
-            parse_time(parcel["delivery_window_start"]),
-            parse_time(parcel["delivery_window_end"]),
-        )
-        for parcel in parcels
+        row["parcel_id"]: (parse_time(row["delivery_window_start"]), parse_time(row["delivery_window_end"]))
+        for row in parcels
     }
-    total_delivered = 0
-    on_time_delivered = 0
-    for event in events:
-        if event["event_type"] != "delivery":
-            continue
-        window_start, window_end = windows[event["parcel_id"]]
-        total_delivered += 1
-        if window_start <= event["time"] <= window_end:
-            on_time_delivered += 1
 
-    # Define the rate as zero when no deliveries were made to avoid division by zero.
-    total_parcels = len(parcels)
-    rate = (on_time_delivered / total_parcels * 100) if total_parcels else 0.0
+    delivery_time: Dict[str, float] = {}
+    number_of_trips = 0
+    for event in events:
+        if event["event_type"] == "delivery":
+            delivery_time[event["parcel_id"]] = event["time"]
+        elif event["event_type"] == "hub_departure":
+            number_of_trips += 1
+
+    on_time_count = 0
+    late_count = 0
+    early_count = 0
+    lateness_total = 0.0
+    for parcel_id, (window_start, window_end) in windows.items():
+        time = delivery_time.get(parcel_id)
+        if time is None:
+            continue
+        if window_start <= time <= window_end:
+            on_time_count += 1
+        elif time > window_end:
+            late_count += 1
+            lateness_total += time - window_end
+        else:
+            early_count += 1
+
+    total_parcels = len(windows)
+    delivered_count = len(delivery_time)
     return {
+        "on_time_rate": on_time_count / delivered_count if delivered_count else 0.0,
+        "delivered_rate": delivered_count / total_parcels if total_parcels else 0.0,
+        "on_time_rate_all_parcels": on_time_count / total_parcels if total_parcels else 0.0,
+        "on_time_count": on_time_count,
+        "delivered_count": delivered_count,
         "total_parcels": total_parcels,
-        "total_delivered": total_delivered,
-        "on_time_delivered": on_time_delivered,
-        "on_time_delivery_rate_percent": rate,
+        "late_count": late_count,
+        "early_count": early_count,
+        "avg_lateness_minutes": lateness_total / late_count if late_count else 0.0,
+        "number_of_trips": number_of_trips,
     }
 
 

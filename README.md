@@ -1,81 +1,122 @@
 # IS115 Project README
 
-Run commands from this directory using Python 3.9 or newer. All policies use only
-the standard library. The simulator, input data, and supplied baseline are unchanged.
+Last-mile delivery dispatch. Metric: **on-time delivery rate** (`on_time_rate`) — of the parcels that were delivered, the fraction delivered inside their preferred window.
 
-## Dispatch approaches
+On its own this ignores undelivered parcels, so it could be raised by delivering fewer, easier parcels. `metrics.json` therefore also reports `delivered_rate` and `on_time_rate_all_parcels` (on-time deliveries out of every parcel that arrived). A policy only counts as better if it raises `on_time_rate` without lowering `delivered_rate`. None of the policies skip parcels to improve the metric.
 
-Each module exposes `dispatch(parcel, context)` and plans one vehicle's trip using
-only the supplied snapshots. Hard constraints include the complete return journey.
-No policy adds waiting at delivery stops (the simulator does not support it).
+Requires Python 3.9+, standard library only. Run every command from the project root.
 
-| Module under `solution.policies` | Algorithm and structure | Decision rule |
-| --- | --- | --- |
-| `baseline` | Supplied greedy FIFO, sorted list | Arrival order; ignores preferred windows. |
-| `greedy_nearest_neighbour` | Greedy nearest neighbour, list and distance dictionary | Shortest next leg among hard-feasible deliveries inside their windows; deadline then ID break ties. |
-| `greedy_best_on_time_route` | Greedy route scoring, set and ordered list | Preserve the current on-time count, then favour on-time count, route coverage, and distance. |
+## Policies
 
-`helpers.py` shares availability filtering and route calculations. All choices are
-deterministic. Nonempty routes are dispatched immediately; empty routes defer to
-the next planning round. All policies except `greedy_nearest_neighbour` may include early
-or late deliveries, since windows are soft constraints.
+| Module | Approach |
+|---|---|
+| `solution.policies.baseline` | Supplied FIFO first-fit (unchanged) |
+| `solution.policies.edd_nearest` | Greedy 1: min-heap picks parcels by least slack (earliest due date allowing for travel), hopeless parcels last; stops visited nearest-neighbour |
+| `solution.policies.greedy_insertion` | Greedy 2: TSP-style cheapest insertion; heap picks the top-50 most urgent candidates each step |
+| `solution.policies.local_search` | Greedy insertion, then improve the stop order: exact (every order) for trips with at most 8 stops, a capped 2-opt pass for bigger trips |
+| `solution.policies.exhaustive_small` | **Recommended** (best of the four core methods). Greedy insertion; trips with at most 8 stops are re-ordered by trying every stop order |
+| `solution.policies.fleet_aware` | Extension of the core methods. Greedy insertion, tight-deadline parcels first; parcels no other truck can return in time for are loaded before anything else (uses `context["fleet"]`); never placed where they would arrive early; small trips re-ordered exhaustively |
 
-The metric is `on_time_delivered / total_parcels * 100`, where `total_parcels`
-includes every parcel in the selected day. Deliveries at either window endpoint
-count as on time. Undelivered parcels count as not on time, preventing a policy from
-improving its score by simply refusing difficult parcels. `total_delivered` remains
-a useful secondary coverage measure.
+All policies except the baseline share one departure rule: if the trip would leave with less than 20 units on board (capacity 30) and every parcel on it has more than 60 minutes to spare, the truck waits for the next planning round instead (`helpers.worth_waiting`).
 
-## Run a policy and calculate metrics
+Shared code is in `solution/policies/helpers.py`. The metric is in `solution/performance_monitor.py`.
 
-Run the supplied baseline with:
+## Reproduce one run
 
-```powershell
-python -m simulator --policy solution.policies.baseline --data data --day day_001 --output results/baseline/day_001
-python -m solution.performance_monitor --data data --day day_001 --log results/baseline/day_001/log.txt
+```bash
+python3 -m simulator --policy solution.policies.exhaustive_small \
+    --data data --day day_001 \
+    --output results/exhaustive_small/day_001
+
+python3 -m solution.performance_monitor \
+    --data data --day day_001 \
+    --log results/exhaustive_small/day_001/log.txt
 ```
 
-```powershell
-python -m simulator --policy solution.policies.greedy_nearest_neighbour --data data --day day_001 --output results/greedy_nearest_neighbour/day_001
-python -m solution.performance_monitor --data data --day day_001 --log results/greedy_nearest_neighbour/day_001/log.txt
+The log goes to `results/<policy>/<day>/log.txt` and the metrics to `metrics.json` beside it.
+
+## Reproduce all results
+
+```bash
+for policy in baseline edd_nearest greedy_insertion local_search exhaustive_small fleet_aware; do
+  for n in $(seq -w 1 20); do
+    day="day_0$n"
+    python3 -m simulator --policy solution.policies.$policy \
+        --data data --day "$day" --output "results/$policy/$day"
+    python3 -m solution.performance_monitor \
+        --data data --day "$day" --log "results/$policy/$day/log.txt"
+  done
+done
 ```
 
-Replace `greedy_nearest_neighbour` with a module name above. To evaluate both selected
-policies over all 20 days in PowerShell (existing results for those paths are replaced):
+The full sweep takes about five minutes. All policies are deterministic, so re-running gives identical logs.
 
-```powershell
-$policies = @('greedy_nearest_neighbour', 'greedy_best_on_time_route')
-foreach ($policy in $policies) {
-    foreach ($i in 1..20) {
-        $day = 'day_{0:D3}' -f $i
-        python -m simulator --policy "solution.policies.$policy" --data data --day $day --output "results/$policy/$day"
-        if ($LASTEXITCODE -ne 0) { throw "Simulation failed: $policy / $day" }
-        python -m solution.performance_monitor --data data --day $day --log "results/$policy/$day/log.txt"
-        if ($LASTEXITCODE -ne 0) { throw "Metric calculation failed: $policy / $day" }
-    }
-}
-```
+## Results (mean over 20 days)
 
-## Checks
+| Policy | On-time rate | Std dev | Worst day | Held-out days 11–20 | Delivered rate | On-time ÷ all parcels | Trips/day |
+|---|---|---|---|---|---|---|---|
+| baseline | 68.1% | 6.2% | 60.1% | 67.8% | 40.5% | 27.4% | 21 |
+| edd_nearest | 79.4% | 6.0% | 70.2% | 79.1% | 93.9% | 74.7% | 28 |
+| greedy_insertion | 91.6% | 3.2% | 82.7% | 91.4% | 96.0% | 87.9% | 30 |
+| local_search | 92.1% | 3.5% | 85.5% | 91.5% | 96.1% | 88.5% | 30 |
+| **exhaustive_small** (recommended) | **92.7%** | 2.7% | 86.3% | 92.8% | 96.0% | 89.0% | 30 |
+| fleet_aware | 95.5% | 3.8% | 86.9% | 95.4% | 96.1% | 91.8% | 31 |
 
-```powershell
-python -m unittest discover -s tests -v
-```
+On-time rate, std dev, worst day and held-out are taken over daily values; delivered rate and on-time ÷ all parcels are pooled over all parcels of the 20 days.
 
-Checks cover input immutability, deterministic selection, capacity, directed return
-distance, return deadline, delivery-window endpoints, and approach-specific choices.
+The baseline's on-time rate looks reasonable (68.1%) only because it delivers just 40.5% of parcels. This is why `delivered_rate` must always be read alongside `on_time_rate`. Pushing the waiting rule to its extreme shows the same trap: a truck that leaves only when something is urgent (`WAIT_MIN_LOAD` above the capacity) scores about 98% on-time but delivers only about 88% of parcels, so it is rejected.
 
-## Implementation complexity
+### Effect of the waiting rule
 
-Let N be all arrived parcel records and n be the available parcels. These bounds
-describe one dispatch call, not the whole simulator. Shared route evaluation scans
-the route; routes can contain up to n parcels. Every policy also scans N records.
+Same policies without the waiting rule (and, for `edd_nearest`, its first version ranked by raw window end with late parcels first):
 
-| Policy | Worst-case time | Additional space |
-| --- | --- | --- |
-| Nearest feasible | O(N + n³) | O(n) |
-| Best on-time route | O(N + n³) | O(n) |
+| Policy | On-time, no waiting | Held-out, no waiting | Delivered, no waiting | → On-time with waiting |
+|---|---|---|---|---|
+| edd_nearest (first version) | 56.0% | 56.6% | 78.3% | 79.4% |
+| greedy_insertion | 83.4% | 83.3% | 95.2% | 91.6% |
+| local_search (2-opt only) | 82.7% | 81.5% | 95.6% | 91.9% (92.1% with exact order for small trips) |
+| exhaustive_small | 83.5% | 83.4% | 95.2% | 92.7% |
+| fleet_aware (no exhaustive ordering, no early hold, tight ≤ 240) | 87.0% | 86.5% | 95.4% | 92.7% (94.3% with early hold, 95.5% with tight ≤ 180) |
 
-These conservative bounds reflect the current straightforward implementations,
-including repeated route checks.
-They do not assume a fixed maximum parcel count from the vehicle's size capacity.
+Parcels arrive in bursts (most at 8h and 11h, then 15h). Without waiting, a truck leaves as soon as it is free, so the whole fleet leaves in the first hour (200 departures at 8–9h over 20 days, then only 2 in the 10h hour). No truck is free when the 9–10h parcels arrive: every one of the 683 parcels arriving at 9h missed its window with `greedy_insertion`. With waiting, departures are spread out and only 75 of them miss. Late deliveries fall from 15.8% to 6.2% of delivered parcels for `greedy_insertion`, and the delivered rate rises for every policy (for `edd_nearest`, most of its rise comes from its new ranking, which alone gives about 92% delivered).
+
+- `edd_nearest` is still lowest: choosing parcels by deadline alone mixes stops from all over the map, so trips are long. Its first version (raw window end, late parcels first) took parcels that could no longer be on time ahead of ones that could.
+- `local_search` with 2-opt alone made each trip shorter, but changing the stop order changes when the truck gets back, which changes every later decision; without waiting it lost to `greedy_insertion` on 14 of 20 days. It now uses the exact order for trips with at most 8 stops and 2-opt only for bigger ones: +0.2 points on both halves (92.6% → 92.8% on days 1–10, 91.3% → 91.5% on days 11–20). It still scores below `exhaustive_small`, which leaves big trips in greedy order.
+- `exhaustive_small` finds the best order for trips with at most 8 stops and is the best of the four core methods.
+- `fleet_aware` scores highest. Re-tuning its "tight" cut-off for the current version (240 → 180 minutes) added 1.5 points on days 1–10 and 0.8 on days 11–20: 94.0% → 95.5% on days 1–10 and 94.6% → 95.4% on days 11–20, with early deliveries falling to 0.0%. Before waiting, its "never arrive early" step backfired (held parcels waited for a busy truck and arrived late); with trucks waiting at the hub there is a truck free for them, and early deliveries fall from 2.6% to 0.5% of delivered parcels. The same step did not help `exhaustive_small` on the held-out days (92.8% → 92.5%), so it is only in `fleet_aware`. The early hold's gain (measured at the old cut-off of 240) is uneven: +1.6 points on both halves on average, but most of it comes from two days (day 7 +11.3, day 13 +10.1), it is worse on 6 of 20 days, the spread across days rises (std dev 3.5% → 4.2%) and the held-out worst day falls (86.6% → 85.7%).
+- `exhaustive_small` is recommended as the best of the four core methods (greedy 1, greedy 2, local search, exhaustive search); `fleet_aware` shows how much further fleet coordination and holding early parcels can go.
+
+About 3.5% of all parcels cannot be delivered on time by any policy: even sent out at the first chance, the truck reaches them after their window closes. Without waiting, 561 of the 722 parcels `fleet_aware` never delivered arrived too late for any truck to reach them and return by the cutoff.
+
+## Tuning constants
+
+Tuning was done on days 1–10 only; days 11–20 were kept for checking. `ROUTE_DISTANCE_BUDGET_FRACTION` was first tuned with the earlier version of the metric (on-time ÷ all parcels); the waiting rule and everything after it, including both re-tunes, with the current one. The top policies' delivered rates are almost identical, so both versions rank them the same way.
+
+In `solution/policies/helpers.py`:
+
+- `ROUTE_DISTANCE_BUDGET_FRACTION = 0.9` — trips stop growing at 90% of the 320 km range. First chosen before the waiting rule on days 1, 5, 10, 15 and 20 (which wrongly included two held-out days). Re-tuned with waiting on days 1–10 only: `greedy_insertion` scored 90.4% at 0.75, 92.2% at 0.8, 91.9% at 0.85, 91.7% at 0.9 and 91.6% at 1.0, with the same pattern for `exhaustive_small` and `fleet_aware`. But 0.8 was worse than 0.9 on the held-out days for all three (e.g. `greedy_insertion` 90.6% vs 91.4%), so 0.9 was kept.
+- `TOP_K = 50` — how many of the most urgent parcels are fully checked at each insertion step. If none of them fit, every waiting parcel is checked before the route is closed.
+- `WAIT_MIN_LOAD = 20`, `WAIT_SLACK = 60` — the waiting rule. On `fleet_aware` over days 1–10 (the version before exhaustive ordering and the early hold were added): 87.6% with no waiting, 87.8% at 5 units, 89.9% at 10, 91.5% at 15, 92.3% at 20 and 25, 88.1% at 30. A slack of 30, 60 or 120 minutes changes the result by at most 0.5 points; 30 lowers the delivered rate. 20 was chosen over 25 because it is further from the drop at 30.
+
+In `solution/policies/exhaustive_small.py`, `local_search.py` and `fleet_aware.py`:
+
+- `MAX_EXHAUSTIVE_STOPS = 8` — 8! = 40,320 orders; 10 stops would be 3.6 million per trip.
+
+In `solution/policies/fleet_aware.py`:
+
+- `SLACK_THRESHOLD = 180` — a parcel is "tight" if it has at most 180 minutes to spare. First set to 240 before waiting, the early hold and exhaustive ordering existed (180, 240 and 300 scored about the same then). Re-tuned on the current version, days 1–10: 93.3% at 60, 93.5% at 90, 93.2% at 120, 95.1% at 150, 95.5% at 180 and 210, 94.0% at 240, 93.0% at 300. 180 was committed to before checking days 11–20 (95.4%, the same as 210). Waiting thresholds of 20 and 25 tie at 180; 15 is lower.
+
+## Ideas tried and dropped
+
+These were tested on days 1–10 (all-parcels metric unless stated) and are not in `solution/`, except where noted:
+
+- **Never arrive early** (skip slots that reach a stop before its window opens). Before the waiting rule it failed for every policy: early deliveries fell to 0%, but late ones rose from 10.3% to 19.6% of parcels, because held parcels waited for a busy truck. With waiting (current metric, on-time ÷ delivered) it was dropped for `exhaustive_small` (92.5% → 92.7% on days 1–10, 92.8% → 92.5% on days 11–20) and `greedy_insertion` (91.7% → 91.1% on days 1–10), but kept for `fleet_aware` (see above).
+- **Booking parcels onto returning trucks by capacity**: about 5 points below `fleet_aware`. Forcing a large group of parcels onto a trip first breaks up the compact routes that cheapest insertion builds.
+- **2-opt that only keeps reversals saving a missed window** (no distance-only changes): 83.8% vs 84.0% on days 1–10 without waiting (on-time ÷ delivered), so it was rejected, although it scored higher on days 11–20 (83.3% vs 81.5%).
+- **Shorter trips during a rush** (cap trips at 60% or 75% of the range when 100–250+ parcels are waiting at the hub; current metric, with waiting): every setting was within ±0.4 points of no cap on days 1–10. The best for `fleet_aware` (250+ parcels, 60%) gave +0.2 on days 1–10 and +0.4 on days 11–20, and exactly 0 for `greedy_insertion`. Dropped: the gain is the size of the noise between settings, it was the best of 8 tried, the held-out gain comes from a single day (day 16, 93.0% → 97.9%; the other nine days are identical), and it adds two constants.
+- **Never wait when a big pile is waiting** (current metric, with waiting): no change for `greedy_insertion` or `exhaustive_small` (when the pile is big their trips are already full), and 0.7–3.0 points worse for `fleet_aware`.
+- **2-opt on `edd_nearest`'s nearest-neighbour route** (current metric, with waiting): on-time 79.6% → 87.5% on days 1–10 and 79.1% → 88.0% on days 11–20, but the delivered rate fell on days 1–10 (94.2% → 93.9%, while rising 93.5% → 94.7% on days 11–20). Rejected under the strict rule that the delivered rate must not drop.
+- **Waiting check using real arrival times on the trip** instead of the direct-drive slack (current metric): +0.0 to +0.2 points on days 1–10 and +0.0 on days 11–20; with a 30-minute margin the delivered rate drops.
+- **Shorter trips late in the day** (cap trip length after 13:00–16:00): best setting 87.8% vs 87.6% for `fleet_aware` on days 1–10 (on-time ÷ delivered), but 86.4% vs 86.5% on days 11–20. Short trips cannot reach far stops, and most undelivered parcels are unreachable anyway.
+- **Reserve truck in the morning** (until 12:00, the last free truck does not leave unless a parcel on its trip has 60 minutes or less to spare; aimed at the worst days 8, 19 and 20, when ~65 parcels for 6 stops arrive at once with ~85-minute windows; current metric). Days 1–10: `exhaustive_small` 92.5% → 93.6%, `greedy_insertion` 91.7% → 93.0%, `local_search` 92.8% → 93.1%, but `fleet_aware` 95.5% → 94.4%; cut-offs of 11:00 and 11:30 were worse than none. Days 11–20: `exhaustive_small` 92.8% → 92.6%, `fleet_aware` 95.4% → 94.5% (worst day 86.9% → 81.8%), and the delivered rate fell for the three core policies. Rejected: it did not help the worst days, because when the wave arrives two trucks are usually home already and the wave needs about three truckloads; one held truck does not close that gap.
+- **Trimming long trips in the morning** (before 11:00 or 12:00, drop parcels with more than 180 or 240 minutes to spare from a trip longer than 90, 120 or 150 km; aimed at days 19 and 20, where a truck left on a long trip with non-urgent parcels just before an urgent wave). Every setting was worse on days 1–10: `fleet_aware` 95.5% → 64.0–94.6%, `exhaustive_small` 92.5% → 74.6–91.1%, and the delivered rate fell. The rule also cut the full 8:00 trips, so parcels they would have delivered on time piled up for later. Rejected without a held-out run.
