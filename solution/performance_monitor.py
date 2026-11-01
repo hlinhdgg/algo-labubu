@@ -15,7 +15,21 @@ def calculate_metrics(
     config: Dict[str, Any],
     events: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Return a JSON dictionary for the chosen performance metric.
+    """Return a JSON-serializable dictionary for the chosen performance metric.
+
+    Chosen metric (service_rate): the average service score over every parcel
+    that arrived during the day. A parcel delivered inside its preferred window
+    (boundaries included) scores 1. A parcel delivered early or late scores
+    1 - (minutes outside the window / window length), and 0 once it is off by a
+    whole window length or more, so being 15 minutes late costs more for a
+    30-minute window than for a 3-hour one. A parcel never delivered scores 0,
+    so a policy cannot raise the metric by skipping hard parcels.
+
+    Parcels that arrive too late in the day for any truck to reach them score 0
+    for every policy, so the best possible value is below 1.0. The strict
+    on_time_rate (on-time deliveries out of every parcel), delivered_rate and
+    on_time_rate_delivered (on-time deliveries out of the parcels delivered)
+    are reported alongside it.
 
     parcels and distances are the rows of the day's CSV files, config is the
     contents of config.json, and events are the records from the run's log.
@@ -24,33 +38,57 @@ def calculate_metrics(
     midnight: "17:00" is 17 * 60 = 1020.
     """
 
-    # Count deliveries inside the preferred window, including its endpoints.
-    # Every parcel in the selected day is part of the denominator.
     windows = {
-        parcel["parcel_id"]: (
-            parse_time(parcel["delivery_window_start"]),
-            parse_time(parcel["delivery_window_end"]),
-        )
-        for parcel in parcels
+        row["parcel_id"]: (parse_time(row["delivery_window_start"]), parse_time(row["delivery_window_end"]))
+        for row in parcels
     }
-    total_delivered = 0
-    on_time_delivered = 0
-    for event in events:
-        if event["event_type"] != "delivery":
-            continue
-        window_start, window_end = windows[event["parcel_id"]]
-        total_delivered += 1
-        if window_start <= event["time"] <= window_end:
-            on_time_delivered += 1
 
-    # Define the rate as zero when no deliveries were made to avoid division by zero.
-    total_parcels = len(parcels)
-    rate = (on_time_delivered / total_parcels * 100) if total_parcels else 0.0
+    delivery_time: Dict[str, float] = {}
+    number_of_trips = 0
+    for event in events:
+        if event["event_type"] == "delivery":
+            delivery_time[event["parcel_id"]] = event["time"]
+        elif event["event_type"] == "hub_departure":
+            number_of_trips += 1
+
+    on_time_count = 0
+    late_count = 0
+    early_count = 0
+    lateness_total = 0.0
+    service_total = 0.0
+    for parcel_id, (window_start, window_end) in windows.items():
+        time = delivery_time.get(parcel_id)
+        if time is None:
+            continue
+        if window_start <= time <= window_end:
+            on_time_count += 1
+            service_total += 1.0
+            continue
+        if time > window_end:
+            late_count += 1
+            lateness_total += time - window_end
+            minutes_off = time - window_end
+        else:
+            early_count += 1
+            minutes_off = window_start - time
+        window_length = window_end - window_start
+        if window_length > 0:
+            service_total += max(0.0, 1.0 - minutes_off / window_length)
+
+    total_parcels = len(windows)
+    delivered_count = len(delivery_time)
     return {
+        "service_rate": service_total / total_parcels if total_parcels else 0.0,
+        "on_time_rate": on_time_count / total_parcels if total_parcels else 0.0,
+        "delivered_rate": delivered_count / total_parcels if total_parcels else 0.0,
+        "on_time_rate_delivered": on_time_count / delivered_count if delivered_count else 0.0,
+        "on_time_count": on_time_count,
+        "delivered_count": delivered_count,
         "total_parcels": total_parcels,
-        "total_delivered": total_delivered,
-        "on_time_delivered": on_time_delivered,
-        "on_time_delivery_rate_percent": rate,
+        "late_count": late_count,
+        "early_count": early_count,
+        "avg_lateness_minutes": lateness_total / late_count if late_count else 0.0,
+        "number_of_trips": number_of_trips,
     }
 
 
