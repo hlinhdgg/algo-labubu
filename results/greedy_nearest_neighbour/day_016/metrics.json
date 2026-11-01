@@ -1,5 +1,6 @@
 {
+  "total_parcels": 797,
   "total_delivered": 655,
   "on_time_delivered": 655,
-  "on_time_delivery_rate_percent": 100.0
+  "on_time_delivery_rate_percent": 82.1831869510665
 }

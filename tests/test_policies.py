@@ -3,10 +3,18 @@
 import copy
 import unittest
 
-from solution.policies import greedy_destination_grouping, greedy_nearest_neighbour
+from solution.policies import (
+    greedy_best_on_time_route,
+    greedy_destination_grouping,
+    greedy_nearest_neighbour,
+)
 from solution.policies.helpers import evaluate_route
 
-POLICIES = (greedy_nearest_neighbour, greedy_destination_grouping)
+POLICIES = (
+    greedy_nearest_neighbour,
+    greedy_destination_grouping,
+    greedy_best_on_time_route,
+)
 
 
 def record(location, end=600.0, start=480.0, size=1.0):

@@ -14,19 +14,27 @@ No policy adds waiting at delivery stops (the simulator does not support it).
 | `baseline` | Supplied greedy FIFO, sorted list | Arrival order; ignores preferred windows. |
 | `greedy_nearest_neighbour` | Greedy nearest neighbour, list and distance dictionary | Shortest next leg among hard-feasible deliveries inside their windows; deadline then ID break ties. |
 | `greedy_destination_grouping` | Greedy grouping, dictionary of lists | Group by exact destination. Select earliest-deadline group; next-leg distance then destination ID break ties. Within groups, use deadline order. |
+| `greedy_best_on_time_route` | Greedy route scoring, set and ordered list | Preserve the current on-time count, then favour on-time count, route coverage, and distance. |
 
 `helpers.py` shares availability filtering and route calculations. All choices are
 deterministic. Nonempty routes are dispatched immediately; empty routes defer to
 the next planning round. All policies except `greedy_nearest_neighbour` may include early
 or late deliveries, since windows are soft constraints.
 
-The metric is `on_time_delivered / total_delivered * 100`, including window
-endpoints. Zero deliveries returns 0%. Undelivered parcels are excluded, so compare
-`total_delivered` alongside the percentage. In particular, nearest-feasible accepts
-only on-time stops and can achieve 100% by serving a smaller subset; this alone is
-not evidence of better overall service. The brief warns against trivial metrics.
+The metric is `on_time_delivered / total_parcels * 100`, where `total_parcels`
+includes every parcel in the selected day. Deliveries at either window endpoint
+count as on time. Undelivered parcels count as not on time, preventing a policy from
+improving its score by simply refusing difficult parcels. `total_delivered` remains
+a useful secondary coverage measure.
 
 ## Run a policy and calculate metrics
+
+Run the supplied baseline with:
+
+```powershell
+python -m simulator --policy solution.policies.baseline --data data --day day_001 --output results/baseline/day_001
+python -m solution.performance_monitor --data data --day day_001 --log results/baseline/day_001/log.txt
+```
 
 ```powershell
 python -m simulator --policy solution.policies.greedy_nearest_neighbour --data data --day day_001 --output results/greedy_nearest_neighbour/day_001
@@ -37,7 +45,7 @@ Replace `greedy_nearest_neighbour` with a module name above. To evaluate both se
 policies over all 20 days in PowerShell (existing results for those paths are replaced):
 
 ```powershell
-$policies = @('greedy_nearest_neighbour', 'greedy_destination_grouping')
+$policies = @('greedy_nearest_neighbour', 'greedy_destination_grouping', 'greedy_best_on_time_route')
 foreach ($policy in $policies) {
     foreach ($i in 1..20) {
         $day = 'day_{0:D3}' -f $i
@@ -68,6 +76,7 @@ the route; routes can contain up to n parcels. Every policy also scans N records
 | --- | --- | --- |
 | Nearest feasible | O(N + n³) | O(n) |
 | Destination grouping | O(N + n²) | O(n) |
+| Best on-time route | O(N + n³) | O(n) |
 
 These conservative bounds reflect the current straightforward implementations,
 including repeated route checks.

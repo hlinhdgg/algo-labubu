@@ -25,7 +25,7 @@ def calculate_metrics(
     """
 
     # Count deliveries inside the preferred window, including its endpoints.
-    # Undelivered parcels are excluded from the user's chosen denominator.
+    # Every parcel in the selected day is part of the denominator.
     windows = {
         parcel["parcel_id"]: (
             parse_time(parcel["delivery_window_start"]),
@@ -44,8 +44,10 @@ def calculate_metrics(
             on_time_delivered += 1
 
     # Define the rate as zero when no deliveries were made to avoid division by zero.
-    rate = (on_time_delivered / total_delivered * 100) if total_delivered else 0.0
+    total_parcels = len(parcels)
+    rate = (on_time_delivered / total_parcels * 100) if total_parcels else 0.0
     return {
+        "total_parcels": total_parcels,
         "total_delivered": total_delivered,
         "on_time_delivered": on_time_delivered,
         "on_time_delivery_rate_percent": rate,
