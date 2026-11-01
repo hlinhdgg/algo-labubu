@@ -5,14 +5,12 @@ import unittest
 
 from solution.policies import (
     greedy_best_on_time_route,
-    greedy_destination_grouping,
     greedy_nearest_neighbour,
 )
 from solution.policies.helpers import evaluate_route
 
 POLICIES = (
     greedy_nearest_neighbour,
-    greedy_destination_grouping,
     greedy_best_on_time_route,
 )
 
@@ -81,7 +79,6 @@ class PolicyTests(unittest.TestCase):
         parcels = {"a1": record("A", end=540), "b": record("B", end=550),
                    "a2": record("A", end=600)}
         self.assertEqual(greedy_nearest_neighbour.dispatch(parcels, context()), ["a1", "a2", "b"])
-        self.assertEqual(greedy_destination_grouping.dispatch(parcels, context()), ["a1", "a2", "b"])
 
 
 if __name__ == "__main__":

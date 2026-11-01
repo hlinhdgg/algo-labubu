@@ -13,7 +13,6 @@ No policy adds waiting at delivery stops (the simulator does not support it).
 | --- | --- | --- |
 | `baseline` | Supplied greedy FIFO, sorted list | Arrival order; ignores preferred windows. |
 | `greedy_nearest_neighbour` | Greedy nearest neighbour, list and distance dictionary | Shortest next leg among hard-feasible deliveries inside their windows; deadline then ID break ties. |
-| `greedy_destination_grouping` | Greedy grouping, dictionary of lists | Group by exact destination. Select earliest-deadline group; next-leg distance then destination ID break ties. Within groups, use deadline order. |
 | `greedy_best_on_time_route` | Greedy route scoring, set and ordered list | Preserve the current on-time count, then favour on-time count, route coverage, and distance. |
 
 `helpers.py` shares availability filtering and route calculations. All choices are
@@ -45,7 +44,7 @@ Replace `greedy_nearest_neighbour` with a module name above. To evaluate both se
 policies over all 20 days in PowerShell (existing results for those paths are replaced):
 
 ```powershell
-$policies = @('greedy_nearest_neighbour', 'greedy_destination_grouping', 'greedy_best_on_time_route')
+$policies = @('greedy_nearest_neighbour', 'greedy_best_on_time_route')
 foreach ($policy in $policies) {
     foreach ($i in 1..20) {
         $day = 'day_{0:D3}' -f $i
@@ -75,7 +74,6 @@ the route; routes can contain up to n parcels. Every policy also scans N records
 | Policy | Worst-case time | Additional space |
 | --- | --- | --- |
 | Nearest feasible | O(N + n³) | O(n) |
-| Destination grouping | O(N + n²) | O(n) |
 | Best on-time route | O(N + n³) | O(n) |
 
 These conservative bounds reflect the current straightforward implementations,
