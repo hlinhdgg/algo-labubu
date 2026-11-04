@@ -23,7 +23,7 @@ Requires Python 3.9+, standard library only. Run every command from the project 
 | `solution.policies.greedy_insertion` | Greedy 2: TSP-style cheapest insertion; heap picks the top-50 most urgent candidates each step |
 | `solution.policies.local_search` | Greedy insertion, then improve the stop order: exact (every order) for trips with at most 8 stops, a capped 2-opt pass for bigger trips |
 | `solution.policies.exhaustive_small` | Best of the four core methods. Greedy insertion; trips with at most 8 stops are re-ordered by trying every stop order |
-| `solution.policies.fleet_aware` | **Recommended** (highest service rate). Builds on the core methods: greedy insertion, tight-deadline parcels first; parcels no other truck can return in time for are loaded before anything else (uses `context["fleet"]`); never placed where they would arrive early; relaxed filler parcels may add at most 20 km to the trip; small trips re-ordered exhaustively |
+| `solution.policies.fleet_aware` | **Recommended** (highest service rate). Builds on the core methods: greedy insertion, tight-deadline parcels first; parcels no other truck can return in time for are loaded before anything else (uses `context["fleet"]`); never placed where they would arrive early; relaxed filler parcels may add at most 20 km to the trip; last-chance parcels go on first; nearly empty trucks wait late in the day if that costs nothing; small trips re-ordered exhaustively |
 
 All policies except the baseline share one departure rule: if the trip would leave with less than 20 units on board (capacity 30) and every parcel on it has more than 60 minutes to spare, the truck waits for the next planning round instead (`helpers.worth_waiting`).
 
@@ -68,7 +68,7 @@ The full sweep takes about five minutes. All policies are deterministic, so re-r
 | greedy_insertion | 91.8% | 2.3% | 86.7% | 92.1% | 91.6% | 86.4% | 95.9% | 90.1% | 30 |
 | local_search | 91.7% | 2.0% | 87.7% | 92.1% | 91.3% | 87.1% | 95.8% | 90.9% | 30 |
 | exhaustive_small (best core method) | 92.0% | 2.3% | 88.1% | 92.2% | 91.7% | 87.0% | 95.7% | 90.8% | 30 |
-| **fleet_aware** (recommended) | **95.6%** | 0.6% | 94.3% | 95.7% | 95.6% | 94.3% | 96.0% | 98.2% | 32 |
+| **fleet_aware** (recommended) | **96.0%** | 0.5% | 95.1% | 96.0% | 96.0% | 94.6% | 96.4% | 98.2% | 32 |
 | *best possible (unlimited trucks)* | *96.5%* | | | | | *96.5%* | *96.5%* | *100%* | |
 
 Service rate, std dev, worst day, days 1–10, validation and strict on-time are taken over daily values; delivered rate and on-time ÷ delivered are pooled over all parcels of the 20 days.
@@ -91,7 +91,7 @@ The baseline delivers only 40.5% of parcels, so it scores 27.4%; measured only o
 
 ### Filler detour limit in `fleet_aware`
 
-`fleet_aware` adds relaxed parcels as filler once urgent ones are on board. A filler parcel may now add at most `FILLER_MAX_DETOUR = 20` km to the trip; before this, filler turned morning trips into long tours, so trucks were still out when later parcels needed them.
+(Figures in this section are before the last-chance rule below.) `fleet_aware` adds relaxed parcels as filler once urgent ones are on board. A filler parcel may now add at most `FILLER_MAX_DETOUR = 20` km to the trip; before this, filler turned morning trips into long tours, so trucks were still out when later parcels needed them.
 
 | `fleet_aware` | Days 1–10 | Days 11–20 |
 |---|---|---|
@@ -112,6 +112,25 @@ The two worst days show why (trips leaving before 11:00; before → after):
 
 So those days were largely caused by the policy's own long trips, not only by the fleet size. On days 11–20 the gain is uneven: days 19 and 20 gain +7.6 and +8.7 and the other eight average about +0.6. The limit does not help the core methods, which have no separate filler step: applied to all their parcels it also blocks urgent ones (20 km: 87.3–87.7%; 40 km: 89.0–90.0%, against 92.1–92.2% on days 1–10).
 
+### Last-chance parcels and end-of-day waiting in `fleet_aware`
+
+Trucks were waiting at the hub while parcels ran out of time. On day 1 at 16:00, trucks 6, 7 and 8 were all free. Cheapest insertion picked the nearest parcel, adding any of the three parcels on their last round would have broken the 90 km of time left, and `worth_waiting` looks only at parcels on the route, so all three trucks waited and those parcels were lost. Two rules were added:
+
+- **Last chance first:** a parcel that is on time if sent now, but whose direct trip could not get back by the cut-off if it left one round later, goes on the trip before anything else.
+- **End-of-day waiting:** in the last `ENDGAME_MINUTES = 150` before the cut-off, a truck with less than `WAIT_MIN_LOAD` units waits one round if the trip would still fit and every parcel on it would still be on time. This keeps it free for parcels that have not arrived yet.
+
+| `fleet_aware` | Days 1–10 | Days 11–20 |
+|---|---|---|
+| Service rate | 95.69% → 95.96% | 95.58% → 96.01% |
+| Worst day | 95.0% → 95.1% | 94.3% → 95.3% |
+| Strict on-time | 94.8% → 95.1% | 93.8% → 94.2% |
+| Late parcels | 36 → 35 | 93 → 93 |
+| Early parcels | 64 → 64 | 80 → 80 |
+| Undelivered parcels | 316 → 295 | 318 → 284 |
+| Days better / worse | 10 / 0 | 8 / 0 |
+
+Of the parcels that any truck could have reached on time, 73 were never delivered before these rules and 18 now. The last-chance rule gives most of the gain alone (95.79% and 95.89%); end-of-day waiting alone barely helps (95.71% on days 1–10), so it only pays together with the first rule.
+
 ### Effect of the waiting rule
 
 Same policies without the waiting rule (and, for `edd_nearest`, its first version ranked by raw window end with late parcels first). This table was measured before the metric switch, so its on-time figures are on-time ÷ delivered:
@@ -130,7 +149,7 @@ Parcels arrive in bursts (most at 8h and 11h, then 15h). Without waiting, a truc
 - `local_search` with 2-opt alone made each trip shorter, but changing the stop order changes when the truck gets back, which changes every later decision; without waiting it lost to `greedy_insertion` on 14 of 20 days. It now uses the exact order for trips with at most 8 stops and 2-opt only for bigger ones: +0.2 points on both halves (on-time ÷ delivered: 92.6% → 92.8% on days 1–10, 91.3% → 91.5% on days 11–20). It still scores below `exhaustive_small`, which leaves big trips in greedy order.
 - `exhaustive_small` finds the best order for trips with at most 8 stops and is the best of the four core methods.
 - `fleet_aware` scores highest. Re-tuning its "tight" cut-off for the current version (240 → 180 minutes) added 1.5 points on days 1–10 and 0.8 on days 11–20 (on-time ÷ delivered): 94.0% → 95.5% on days 1–10 and 94.6% → 95.4% on days 11–20, with early deliveries falling to 0.0%. Before waiting, its "never arrive early" step backfired (held parcels waited for a busy truck and arrived late); with trucks waiting at the hub there is a truck free for them, and early deliveries fall from 2.6% to 0.5% of delivered parcels. The same step did not help `exhaustive_small` on the validation days (92.8% → 92.5%), so it is only in `fleet_aware`. The early hold's gain (measured at the old cut-off of 240) is uneven: +1.6 points on both halves on average, but most of it comes from two days (day 7 +11.3, day 13 +10.1), it is worse on 6 of 20 days, the spread across days rises (std dev 3.5% → 4.2%) and the validation worst day falls (86.6% → 85.7%).
-- `fleet_aware` is recommended: it has the highest service rate on both halves (95.7% on days 1–10, 95.6% on days 11–20) and uses only the same building blocks as the core methods (a heap, cheapest insertion, exhaustive ordering of small trips) plus the trucks' return times from `context["fleet"]`. Among the four core methods (greedy 1, greedy 2, local search, exhaustive search), `exhaustive_small` is best (92.0%, just ahead of `greedy_insertion` 91.8% and `local_search` 91.7%); `fleet_aware` adds 3.6 points through fleet coordination, holding parcels that would arrive early, and limiting filler detours.
+- `fleet_aware` is recommended: it has the highest service rate on both halves (96.0% on days 1–10, 96.0% on days 11–20) and uses only the same building blocks as the core methods (a heap, cheapest insertion, exhaustive ordering of small trips) plus the trucks' return times from `context["fleet"]`. Among the four core methods (greedy 1, greedy 2, local search, exhaustive search), `exhaustive_small` is best (92.0%, just ahead of `greedy_insertion` 91.8% and `local_search` 91.7%); `fleet_aware` adds 4.0 points through fleet coordination, holding parcels that would arrive early, limiting filler detours, and the last-chance and end-of-day rules.
 
 About 3.5% of all parcels cannot be delivered on time by any policy: even sent out at the first chance, the truck reaches them after their window closes. Without waiting, 561 of the 722 parcels `fleet_aware` never delivered arrived too late for any truck to reach them and return by the cutoff.
 
@@ -159,6 +178,7 @@ In `solution/policies/exhaustive_small.py`, `local_search.py` and `fleet_aware.p
 In `solution/policies/fleet_aware.py`:
 
 - `SLACK_THRESHOLD = 180` — a parcel is "tight" if it has at most 180 minutes to spare. First set to 240 before waiting, the early hold and exhaustive ordering existed (180, 240 and 300 scored about the same then). Re-tuned on the current version, days 1–10: 93.3% at 60, 93.5% at 90, 93.2% at 120, 95.1% at 150, 95.5% at 180 and 210, 94.0% at 240, 93.0% at 300. 180 was committed to before checking days 11–20 (95.4%, the same as 210). Waiting thresholds of 20 and 25 tie at 180; 15 is lower.
+- `ENDGAME_MINUTES = 150` — how long before the cut-off the end-of-day waiting rule applies. With the last-chance rule, days 1–10, service rate: 95.79% with no end-of-day waiting, 95.80% at 90, 95.90% at 120, 95.96% at 150 and 180. 150 was committed to before checking days 11–20 (96.01%). On this data it means from 15:30.
 - `FILLER_MAX_DETOUR = 20` — how many km one filler parcel may add to a trip. Days 1–10, service rate: 89.9% at 0, 94.3% at 5, 94.7% at 10, 95.7% at 15, 20, 25 and 30, 95.0% at 40, 94.3% at 60, 93.6% with no limit. 20 was committed to before checking days 11–20 (95.6%), because it sits well inside the flat range. Why 15–30 give identical scores is not fully explained.
 
 ## Ideas tried and dropped
@@ -178,3 +198,5 @@ These were tested on days 1–10 and are not in `solution/`, except where noted.
 - **`fleet_aware`'s filler rule using service lost** instead of counting missed windows (a filler parcel may add at most 0, 0.1, 0.25 or 0.5 service lost; service rate, days 1–10): logs identical to the current rule on all 10 days at every setting. The cost already picks parcels that add no service lost first, so the limit never changes a decision. Not kept, as it would add code with no effect.
 - **Allowing slightly early arrivals in `fleet_aware`** (5, 15 or 30 minutes before the window; service rate, days 1–10, before the filler limit): 93.5%, 93.1% and 93.0% vs 93.6%. **Shortlist of 100 instead of 50**: no gain in the mean (93.6%). Not kept.
 - **Trimming long trips in the morning** (before 11:00 or 12:00, drop parcels with more than 180 or 240 minutes to spare from a trip longer than 90, 120 or 150 km; on-time ÷ delivered; aimed at days 19 and 20, where a truck left on a long trip with non-urgent parcels just before an urgent wave). Every setting was worse on days 1–10: `fleet_aware` 95.5% → 64.0–94.6%, `exhaustive_small` 92.5% → 74.6–91.1%, and the delivered rate fell. The rule also cut the full 8:00 trips, so parcels they would have delivered on time piled up for later. Rejected without a validation run. The filler detour limit later achieved what this aimed at: it stops long detours while the trip is being built, instead of removing parcels afterwards.
+- **Only stopping the truck from waiting when a last-chance parcel exists** (`worth_waiting` looks at every waiting parcel, not just those on the route; days 1–10): 95.69% → 95.63%. The truck leaves, but the last-chance parcels are still not on it. The fix has to put them on the trip.
+- **Stopping `best_stop_order` from creating early arrivals** (days 1–10): early parcels 64 → 0, but late parcels 36 → 111 and the service rate 95.69% → 95.62% (95.96% → 95.89% with the last-chance and end-of-day rules). Arriving a few minutes early costs little under the service rate, so these re-orders are kept. Under a metric that punishes early arrivals more, this should be re-tested.
