@@ -1,13 +1,13 @@
 {
-  "service_rate": 0.9207637909536757,
-  "on_time_rate": 0.8502475247524752,
-  "delivered_rate": 0.9566831683168316,
-  "on_time_rate_delivered": 0.888745148771022,
-  "on_time_count": 687,
-  "delivered_count": 773,
+  "service_rate": 0.9611224854628321,
+  "on_time_rate": 0.9603960396039604,
+  "delivered_rate": 0.9628712871287128,
+  "on_time_rate_delivered": 0.9974293059125964,
+  "on_time_count": 776,
+  "delivered_count": 778,
   "total_parcels": 808,
-  "late_count": 86,
+  "late_count": 2,
   "early_count": 0,
-  "avg_lateness_minutes": 23.496011627906977,
-  "number_of_trips": 30
+  "avg_lateness_minutes": 71.90599999999995,
+  "number_of_trips": 32
 }

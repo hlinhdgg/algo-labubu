@@ -138,16 +138,6 @@ def route_cost(
     return (service_lost(route, parcel, distances, departure_time), route_distance(route, parcel, distances))
 
 
-def is_feasible(route: Sequence[str], parcel: Dict[str, Parcel], context: SimulationContext) -> bool:
-    """Check capacity and the real (hard) distance budget for a candidate route."""
-
-    total_size = sum(parcel[parcel_id]["size"] for parcel_id in route)
-    if total_size > context["capacity"] + 1e-9:
-        return False
-    distance = route_distance(route, parcel, context["travel_distance"])
-    return distance <= effective_budget(context) + 1e-9
-
-
 def best_insertion_slot(
     route: Sequence[str],
     candidate_id: str,
@@ -158,6 +148,7 @@ def best_insertion_slot(
     capacity: float,
     max_violations: Optional[int] = None,
     hold_early: bool = False,
+    max_detour: Optional[float] = None,
 ) -> Optional[Tuple[int, Tuple[float, float]]]:
     """Best position to insert candidate_id into route; None if it doesn't fit anywhere.
 
@@ -167,18 +158,23 @@ def best_insertion_slot(
     If max_violations is given, slots
     that would leave more than that many missed windows are not allowed. If hold_early
     is set, slots where the candidate itself would arrive before its window opens are
-    not allowed either, so the parcel waits at the hub for a later trip instead.
+    not allowed either, so the parcel waits at the hub for a later trip instead. If
+    max_detour is given, slots that would add more than that many km to a non-empty
+    route are not allowed.
     """
 
     current_size = sum(parcel[parcel_id]["size"] for parcel_id in route)
     if current_size + parcel[candidate_id]["size"] > capacity + 1e-9:
         return None
     window_start = parcel[candidate_id]["delivery_window_start"]
+    base_distance = route_distance(route, parcel, distances)
     best: Optional[Tuple[int, Tuple[float, float]]] = None
     for position in range(len(route) + 1):
         trial = route[:position] + [candidate_id] + route[position:]
         distance = route_distance(trial, parcel, distances)
         if distance > budget + 1e-9:
+            continue
+        if max_detour is not None and route and distance - base_distance > max_detour + 1e-9:
             continue
         times = route_arrival_times(trial, parcel, distances, departure_time)
         if hold_early and times[position] < window_start:
@@ -221,6 +217,7 @@ def _best_candidate(
     capacity: float,
     max_violations: Optional[int] = None,
     hold_early: bool = False,
+    max_detour: Optional[float] = None,
 ) -> Optional[Tuple[Tuple[float, float], str, int]]:
     """Among pool, the (cost, parcel_id, position) of the single cheapest insertion.
 
@@ -234,7 +231,7 @@ def _best_candidate(
     best = None
     for parcel_id in pool:
         result = best_insertion_slot(
-            route, parcel_id, parcel, distances, departure_time, budget, capacity, max_violations, hold_early
+            route, parcel_id, parcel, distances, departure_time, budget, capacity, max_violations, hold_early, max_detour
         )
         if result is None:
             continue
@@ -253,7 +250,7 @@ def build_cheapest_insertion_route(
     budget: Optional[float] = None,
     max_new_violations: Optional[int] = None,
     hold_early: bool = False,
-    shortlist_by: str = "urgency",
+    max_detour: Optional[float] = None,
 ) -> List[str]:
     """Build one route with the TSP-style cheapest-insertion greedy.
 
@@ -274,9 +271,8 @@ def build_cheapest_insertion_route(
     start_route continues an existing partial route instead of starting empty; budget
     overrides the default distance limit (preferred_budget); max_new_violations caps how
     many missed windows one insertion may add (0 = none); hold_early forbids slots where
-    the new parcel would arrive before its window opens. shortlist_by="nearby" picks the
-    top_k candidates by how close they are to a stop already on the route, instead of
-    by urgency.
+    the new parcel would arrive before its window opens; max_detour limits how many km
+    one insertion may add to a non-empty route.
     """
 
     distances = context["travel_distance"]
@@ -296,18 +292,13 @@ def build_cheapest_insertion_route(
             else None
         )
         pool = sorted(remaining)
-        if shortlist_by == "nearby":
-            stops = {HUB} | {parcel[pid]["delivery_location_id"] for pid in route}
-            key = lambda pid: min(distances[stop][parcel[pid]["delivery_location_id"]] for stop in stops)
-        else:
-            key = lambda pid: urgency_key(pid, parcel, context)
-        shortlist = heapq.nsmallest(top_k, pool, key=key)
+        shortlist = heapq.nsmallest(top_k, pool, key=lambda pid: urgency_key(pid, parcel, context))
         choice = _best_candidate(
-            shortlist, route, parcel, distances, departure_time, budget, capacity, max_violations, hold_early
+            shortlist, route, parcel, distances, departure_time, budget, capacity, max_violations, hold_early, max_detour
         )
         if choice is None and len(remaining) > len(shortlist):
             choice = _best_candidate(
-                pool, route, parcel, distances, departure_time, budget, capacity, max_violations, hold_early
+                pool, route, parcel, distances, departure_time, budget, capacity, max_violations, hold_early, max_detour
             )
         if choice is None:
             break

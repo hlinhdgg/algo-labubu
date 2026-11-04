@@ -18,7 +18,7 @@ one planning round instead (helpers.worth_waiting).
 Finally, a 2-opt pass (helpers.two_opt_improve, as in local_search.py) reverses
 segments of the nearest-neighbour route when that reduces service lost or
 distance. Nearest neighbour only ever looks one stop ahead, so its routes often
-cross themselves; this clean-up gained 7-9 points on both halves of the days.
+cross themselves (see README.md for the measured gain).
 
 A first version ranked by the raw window end and took late parcels first; it scored
 about 20 points lower (see README.md).

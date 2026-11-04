@@ -22,6 +22,10 @@ opens; it waits at the hub for a later trip instead (hold_early). This only help
 together with the waiting rule: without it, trucks were always busy and held parcels
 ended up late instead (see README.md).
 
+Filler may add at most FILLER_MAX_DETOUR km to the trip. Without this limit, relaxed
+parcels that could easily wait turned morning trips into long tours, so trucks were
+still out when later parcels needed them.
+
 Like the other policies, the truck waits one planning round instead of leaving
 nearly empty with nothing urgent on board (helpers.worth_waiting), and small trips
 get the exact best stop order (helpers.best_stop_order).
@@ -47,6 +51,10 @@ MAX_EXHAUSTIVE_STOPS = 8
 # 1-10 after waiting, the early hold and exhaustive ordering were added: 180 and 210
 # score best; 150 and below or 240 and above are worse (see README.md).
 SLACK_THRESHOLD = 180.0
+
+# A relaxed parcel may add at most this many km to the trip. Tuned on days 1-10: 15, 20,
+# 25 and 30 score the same; 10 and below or 40 and above are worse (see README.md).
+FILLER_MAX_DETOUR = 20.0
 
 
 def _wait_for_next_truck(context: SimulationContext) -> float:
@@ -88,7 +96,13 @@ def dispatch(parcel: Dict[str, Parcel], context: SimulationContext) -> List[str]
         parcel, context, candidate_ids=tight, start_route=route, hold_early=True
     )
     route = build_cheapest_insertion_route(
-        parcel, context, candidate_ids=relaxed, start_route=route, max_new_violations=0, hold_early=True
+        parcel,
+        context,
+        candidate_ids=relaxed,
+        start_route=route,
+        max_new_violations=0,
+        hold_early=True,
+        max_detour=FILLER_MAX_DETOUR,
     )
     if worth_waiting(route, parcel, context):
         return []
